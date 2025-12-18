@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AR Game - Distortion Free</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
+        
+        /* Mirror the container */
+        #container {
+            position: relative; width: 100vw; height: 100vh; transform: scaleX(-1); 
+        }
+
+        /* Hide raw elements */
+        #video-feed, #cutout-canvas { display: none; }
+        #three-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+        /* UI Layer (Unmirrored) */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; 
+            pointer-events: none; z-index: 10;
+        }
+        #score-board {
+            position: absolute; top: 20px; right: 20px;
+            color: #00ffcc; font-size: 2.5rem; font-weight: 900;
+            text-shadow: 2px 2px 0px #000;
+            background: rgba(0, 0, 0, 0.6); padding: 10px 25px; border-radius: 15px; border: 2px solid #00ffcc;
+        }
+        #status {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 1.2rem; text-align: center;
+            background: rgba(0,0,0,0.8); padding: 30px; border-radius: 20px;
+        }
+    </style>
+    
+    <!-- AI Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+
+    <!-- Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="container">
+        <video id="video-feed" autoplay muted playsinline></video>
+        <canvas id="cutout-canvas"></canvas>
+        <canvas id="three-canvas"></canvas>
+    </div>
+
+    <div id="ui-layer">
+        <div id="score-board">0</div>
+        <div id="status">Starting Camera...</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- Configuration ---
+        const MOLE_MODEL_URL = './model.glb'; 
+        const BG_MODEL_URL = './background.glb'; 
+        const MOLE_SCALE = 0.5;
+        const BG_SCALE = 3.0; // Increased to cover wider screens
+        
+        const GRAB_THRESHOLD = 0.08; 
+        const HIT_RADIUS = 0.2; 
+        const SPAWN_RATE = 1200; 
+
+        // --- Globals ---
+        let score = 0;
+        let objects = []; 
+        let lastSpawnTime = 0;
+        let moleModel = null;
+        let handResults = null;
+        let screenAspect = window.innerWidth / window.innerHeight;
+
+        const scoreElement = document.getElementById('score-board');
+        const statusElement = document.getElementById('status');
+        const videoElement = document.getElementById('video-feed');
+        const canvasElement = document.getElementById('three-canvas');
+        const cutoutCanvas = document.getElementById('cutout-canvas');
+        const cutoutCtx = cutoutCanvas.getContext('2d');
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        
+        // FIX: Camera respects screen aspect ratio
+        // Y is fixed from -1 to 1. X scales based on aspect.
+        const camera = new THREE.OrthographicCamera(-screenAspect, screenAspect, 1, -1, 0.1, 100);
+        camera.position.z = 10;
+
+        const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, alpha: false, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(0, 5, 10);
+        scene.add(dirLight);
+
+        // --- Load Models ---
+        const loader = new GLTFLoader();
+
+        loader.load(MOLE_MODEL_URL, (gltf) => { 
+            moleModel = gltf.scene; 
+            moleModel.traverse(c => { if(c.isMesh) c.material.side = THREE.DoubleSide; });
+        });
+
+        loader.load(BG_MODEL_URL, (gltf) => {
+            const bgModel = gltf.scene;
+            bgModel.scale.set(BG_SCALE, BG_SCALE, BG_SCALE);
+            bgModel.position.z = -10; 
+            bgModel.position.y = -2;
+            scene.add(bgModel);
+        });
+
+        // --- The User Plane (Distortion Fix) ---
+        
+        const cutoutTexture = new THREE.CanvasTexture(cutoutCanvas);
+        cutoutTexture.colorSpace = THREE.SRGBColorSpace;
+        cutoutTexture.minFilter = THREE.LinearFilter;
+
+        // Start with a 1x1 plane, we will scale it dynamically
+        const userGeometry = new THREE.PlaneGeometry(1, 1); 
+        const userMaterial = new THREE.MeshBasicMaterial({
+            map: cutoutTexture,
+            transparent: true,
+            side: THREE.DoubleSide
+        });
+        const userPlane = new THREE.Mesh(userGeometry, userMaterial);
+        userPlane.position.z = -2;
+        scene.add(userPlane);
+
+        // Function to ensure video fills screen without stretching (Cover Mode)
+        function resizeUserPlane() {
+            if (videoElement.videoWidth === 0) return;
+
+            // 1. Update Camera Aspect
+            screenAspect = window.innerWidth / window.innerHeight;
+            camera.left = -screenAspect;
+            camera.right = screenAspect;
+            camera.top = 1;
+            camera.bottom = -1;
+            camera.updateProjectionMatrix();
+
+            // 2. Calculate "Cover" Scale
+            // View Height is fixed at 2 units (Top 1 to Bottom -1)
+            // View Width is 2 * screenAspect
+            const viewHeight = 2;
+            const viewWidth = 2 * screenAspect;
+            
+            const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
+            
+            // Determine scale to cover the view
+            let scaleX, scaleY;
+
+            // If screen is wider than video, fit to width
+            if (screenAspect > videoAspect) {
+                scaleX = viewWidth;
+                scaleY = viewWidth / videoAspect;
+            } else {
+                // Screen is taller than video, fit to height
+                scaleY = viewHeight;
+                scaleX = viewHeight * videoAspect;
+            }
+
+            userPlane.scale.set(scaleX, scaleY, 1);
+        }
+
+        // --- AI Logic ---
+        
+        function onSegmentationResults(results) {
+            // Update Canvas Size if it changed (e.g. webcam started)
+            if (cutoutCanvas.width !== videoElement.videoWidth) {
+                cutoutCanvas.width = videoElement.videoWidth;
+                cutoutCanvas.height = videoElement.videoHeight;
+                resizeUserPlane(); // Recalculate aspect ratio
+            }
+
+            cutoutCtx.clearRect(0, 0, cutoutCanvas.width, cutoutCanvas.height);
+            
+            // Draw Mask
+            cutoutCtx.globalCompositeOperation = 'source-over';
+            cutoutCtx.drawImage(results.segmentationMask, 0, 0, cutoutCanvas.width, cutoutCanvas.height);
+
+            // Composite Video
+            cutoutCtx.globalCompositeOperation = 'source-in';
+            cutoutCtx.drawImage(videoElement, 0, 0, cutoutCanvas.width, cutoutCanvas.height);
+            
+            // Reset
+            cutoutCtx.globalCompositeOperation = 'source-over';
+            cutoutTexture.needsUpdate = true;
+        }
+
+        async function startApp() {
+            const segmentation = new SelfieSegmentation({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`});
+            segmentation.setOptions({ modelSelection: 1 });
+            segmentation.onResults(onSegmentationResults);
+
+            const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+            hands.onResults((results) => { handResults = results; });
+
+            const cameraUtils = new Camera(videoElement, {
+                onFrame: async () => {
+                    await segmentation.send({image: videoElement});
+                    await hands.send({image: videoElement});
+                    statusElement.style.display = 'none';
+                    renderLoop();
+                },
+                width: 1280,
+                height: 720
+            });
+            await cameraUtils.start();
+        }
+
+        // --- Game Logic ---
+
+        function createMole() {
+            let mole;
+            let isGlb = false;
+
+            if (moleModel) {
+                mole = moleModel.clone();
+                mole.scale.set(MOLE_SCALE, MOLE_SCALE, MOLE_SCALE);
+                isGlb = true;
+            } else {
+                const geometry = new THREE.CapsuleGeometry(0.1, 0.3, 4, 8);
+                const material = new THREE.MeshStandardMaterial({ color: 0xff4444 });
+                mole = new THREE.Mesh(geometry, material);
+                mole.rotation.z = Math.PI / 2;
+            }
+
+            // DYNAMIC SPAWN POINTS: Use Camera Edges
+            // camera.right is the exact edge of the screen in 3D units
+            const screenEdge = camera.right; 
+            
+            const sideFactor = Math.random() > 0.5 ? 1 : -1; 
+            
+            // Start slightly off-screen (Edge + 0.3)
+            const startX = sideFactor * (screenEdge + 0.3);
+            
+            // Pop out distance (Fixed distance from edge, e.g., 0.6 units inwards)
+            const targetX = sideFactor * (screenEdge - 0.6); 
+
+            mole.position.x = startX;
+            mole.position.y = (Math.random() * 1.5) - 0.75;
+            mole.position.z = 0; 
+
+            if (isGlb) mole.rotation.y = sideFactor === 1 ? -Math.PI / 2 : Math.PI / 2;
+
+            mole.userData = { 
+                state: 'ENTERING', startX: startX, targetX: targetX, 
+                side: sideFactor, waitTimer: 0, isGlb: isGlb 
+            };
+            scene.add(mole);
+            objects.push(mole);
+        }
+
+        function updateMoleVisuals(mole, state) {
+            let colorHex = 0x000000;
+            if (state === 'hover') colorHex = 0x555555;
+            mole.traverse((child) => {
+                if (child.isMesh) {
+                    child.material.emissive.setHex(colorHex);
+                    if (!mole.userData.isGlb) {
+                         if (state === 'waiting') child.material.color.setHex(0x00ff00);
+                         else if (state === 'leaving') child.material.color.setHex(0xff4444);
+                    }
+                }
+            });
+        }
+
+        function updateMoles() {
+            for (let i = objects.length - 1; i >= 0; i--) {
+                const mole = objects[i];
+                const data = mole.userData;
+
+                if (data.state === 'ENTERING') {
+                    mole.position.x -= data.side * 0.035; // Slightly faster
+                    
+                    const reached = (data.side === 1 && mole.position.x <= data.targetX) || 
+                                    (data.side === -1 && mole.position.x >= data.targetX);
+                    if (reached) {
+                        mole.position.x = data.targetX;
+                        data.state = 'WAITING';
+                        updateMoleVisuals(mole, 'waiting');
+                    }
+                } else if (data.state === 'WAITING') {
+                    data.waitTimer++;
+                    if(data.isGlb) mole.rotation.z = Math.sin(Date.now() / 200) * 0.1;
+                    else mole.rotation.x += 0.1;
+
+                    if (data.waitTimer > 60) {
+                        data.state = 'LEAVING';
+                        updateMoleVisuals(mole, 'leaving');
+                    }
+                } else if (data.state === 'LEAVING') {
+                    mole.position.x += data.side * 0.035;
+                    // Remove if passed start position (off-screen)
+                    const offScreen = (data.side === 1 && mole.position.x > data.startX) || 
+                                      (data.side === -1 && mole.position.x < data.startX);
+                    if (offScreen) {
+                        scene.remove(mole);
+                        objects.splice(i, 1);
+                    }
+                }
+            }
+        }
+
+        function checkInteractions() {
+            if (!handResults || !handResults.multiHandLandmarks) return;
+
+            for (const landmarks of handResults.multiHandLandmarks) {
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                const pinchDist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                
+                // Map Hand Coordinates (0 to 1) to Camera Frustum (-Aspect to +Aspect)
+                // Note: X is inverted because of the CSS mirror scaleX(-1), but we must match logic
+                const screenEdge = camera.right;
+                
+                // Since container is mirrored: Left hand in video appears on Right side of screen.
+                // MediaPipe X=0 is Left (which becomes Right visually).
+                // Let's stick to standard math: 
+                // Normalized X (0..1) -> Screen X (-Aspect..Aspect)
+                // MediaPipe x=0 is left edge of image. 
+                
+                const handX = (indexTip.x * 2 - 1) * screenEdge; 
+                const handY = -(indexTip.y * 2 - 1); // Top is 1, Bottom is -1
+
+                for (let i = objects.length - 1; i >= 0; i--) {
+                    const mole = objects[i];
+                    const dist = Math.hypot(handX - mole.position.x, handY - mole.position.y);
+
+                    if (dist < HIT_RADIUS) {
+                        if (mole.userData.state !== 'LEAVING') updateMoleVisuals(mole, 'hover');
+                        if (pinchDist < GRAB_THRESHOLD) {
+                            score++;
+                            scoreElement.innerText = score;
+                            scene.remove(mole);
+                            objects.splice(i, 1);
+                        }
+                    } else {
+                        updateMoleVisuals(mole, 'normal');
+                    }
+                }
+            }
+        }
+
+        function renderLoop() {
+            const now = Date.now();
+            if (now - lastSpawnTime > SPAWN_RATE) {
+                createMole();
+                lastSpawnTime = now;
+            }
+            updateMoles();
+            checkInteractions();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            resizeUserPlane();
+        });
+
+        // Start
+        startApp();
+
+    </script>
+</body>
+</html>
