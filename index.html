@@ -280,12 +280,14 @@
             let mole;
             let isGlb = false;
             let baseScale = 1;
+            let hitRadius = HIT_RADIUS;
 
             if (moleModel) {
                 mole = moleModel.clone();
                 mole.scale.set(MOLE_SCALE, MOLE_SCALE, MOLE_SCALE);
                 isGlb = true;
                 baseScale = MOLE_SCALE;
+                hitRadius = moleHitRadius;
             } else {
                 const geometry = new THREE.CapsuleGeometry(0.1, 0.3, 4, 8);
                 geometry.computeBoundingSphere();
@@ -294,19 +296,20 @@
                 mole = new THREE.Mesh(geometry, material);
                 mole.rotation.z = Math.PI / 2;
                 baseScale = 1;
+                hitRadius = fallbackHitRadius;
             }
 
             // DYNAMIC SPAWN POINTS: Use Camera Edges
             // camera.right is the exact edge of the screen in 3D units
-            const screenEdge = camera.right; 
-            
-            const sideFactor = Math.random() > 0.5 ? 1 : -1; 
-            
-            // Start slightly off-screen (Edge + 0.3)
-            const startX = sideFactor * (screenEdge + 0.3);
-            
-            // Pop out distance (Fixed distance from edge, e.g., 0.6 units inwards)
-            const targetX = sideFactor * (screenEdge - 0.6); 
+            const screenEdge = camera.right;
+
+            const sideFactor = Math.random() > 0.5 ? 1 : -1;
+
+            // Start off-screen by at least the mole radius so it emerges naturally
+            const startX = sideFactor * (screenEdge + hitRadius);
+
+            // Keep roughly 20% of the model off-canvas by stopping 60% of the radius inside the view
+            const targetX = sideFactor * (screenEdge - hitRadius * 0.6);
 
             // Keep trying to find a clear spawn position to avoid overlaps
             let spawnY = 0;
