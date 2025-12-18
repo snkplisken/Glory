@@ -95,10 +95,12 @@
 
         // --- Globals ---
         let score = 0;
-        let objects = []; 
+        let objects = [];
         let lastSpawnTime = 0;
         let moleModel = null;
         let handResults = null;
+        let moleHitRadius = HIT_RADIUS;
+        let fallbackHitRadius = HIT_RADIUS;
         let screenAspect = window.innerWidth / window.innerHeight;
 
         const DEFAULT_LOGO_DATA_URL = (() => {
@@ -154,9 +156,14 @@
         // --- Load Models ---
         const loader = new GLTFLoader();
 
-        loader.load(MOLE_MODEL_URL, (gltf) => { 
-            moleModel = gltf.scene; 
+        loader.load(MOLE_MODEL_URL, (gltf) => {
+            moleModel = gltf.scene;
             moleModel.traverse(c => { if(c.isMesh) c.material.side = THREE.DoubleSide; });
+
+            const bounds = new THREE.Box3().setFromObject(moleModel);
+            const sphere = new THREE.Sphere();
+            bounds.getBoundingSphere(sphere);
+            moleHitRadius = sphere.radius * MOLE_SCALE * 1.05; // small padding
         });
 
         loader.load(BG_MODEL_URL, (gltf) => {
@@ -281,6 +288,8 @@
                 baseScale = MOLE_SCALE;
             } else {
                 const geometry = new THREE.CapsuleGeometry(0.1, 0.3, 4, 8);
+                geometry.computeBoundingSphere();
+                fallbackHitRadius = (geometry.boundingSphere?.radius || HIT_RADIUS) * 1.05;
                 const material = new THREE.MeshStandardMaterial({ color: 0xff4444 });
                 mole = new THREE.Mesh(geometry, material);
                 mole.rotation.z = Math.PI / 2;
@@ -316,7 +325,8 @@
             mole.userData = { 
                 state: 'ENTERING', startX: startX, targetX: targetX,
                 side: sideFactor, waitTimer: 0, isGlb: isGlb,
-                hitTimer: 0, baseScale: baseScale
+                hitTimer: 0, baseScale: baseScale,
+                hitRadius: isGlb ? moleHitRadius : fallbackHitRadius
             };
             scene.add(mole);
             objects.push(mole);
@@ -418,9 +428,10 @@
 
                 for (let i = objects.length - 1; i >= 0; i--) {
                     const mole = objects[i];
+                    const hitRadius = mole.userData.hitRadius ?? HIT_RADIUS;
                     const dist = Math.hypot(handX - mole.position.x, handY - mole.position.y);
 
-                    if (dist < HIT_RADIUS) {
+                    if (dist < hitRadius) {
                         if (mole.userData.state !== 'LEAVING' && mole.userData.state !== 'HIT') updateMoleVisuals(mole, 'hover');
                         if (pinchDist < GRAB_THRESHOLD && mole.userData.state !== 'HIT') {
                             score++;
