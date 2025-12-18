@@ -58,6 +58,10 @@
             z-index: 12;
         }
 
+        #controls.hidden {
+            display: none;
+        }
+
         #controls label {
             display: block;
             margin-bottom: 6px;
@@ -117,6 +121,10 @@
                 <label for="speed">Travel Speed <span class="value" id="speed-value">1.0x</span></label>
                 <input id="speed" type="range" min="0.3" max="2" value="1" step="0.05" />
             </div>
+            <div style="margin-top: 12px;">
+                <label for="hold-duration">Hold Outside <span class="value" id="hold-duration-value">1.5s</span></label>
+                <input id="hold-duration" type="range" min="400" max="4000" value="1500" step="50" />
+            </div>
         </div>
     </div>
 
@@ -137,6 +145,7 @@
         const DEFAULT_SPAWN_RATE = 1200;
         const DEFAULT_MAX_MOLES = 5;
         const DEFAULT_SPEED = 1;
+        const DEFAULT_HOLD_DURATION_MS = 1500;
         const MIN_MOLE_SEPARATION = 0.6;
         const HIT_EFFECT_DURATION = 12;
         const HIT_SCALE_MULTIPLIER = 1.6;
@@ -153,6 +162,8 @@
         let spawnDelayMs = DEFAULT_SPAWN_RATE;
         let maxActiveMoles = DEFAULT_MAX_MOLES;
         let travelSpeed = DEFAULT_SPEED;
+        let holdDurationMs = DEFAULT_HOLD_DURATION_MS;
+        const DEV_CONTROLS_ENABLED = new URLSearchParams(window.location.search).has('dev');
 
         const DEFAULT_LOGO_DATA_URL = (() => {
             const canvas = document.createElement('canvas');
@@ -183,9 +194,12 @@
         const spawnRateInput = document.getElementById('spawn-rate');
         const maxMolesInput = document.getElementById('max-moles');
         const speedInput = document.getElementById('speed');
+        const holdInput = document.getElementById('hold-duration');
         const spawnRateValue = document.getElementById('spawn-rate-value');
         const maxMolesValue = document.getElementById('max-moles-value');
         const speedValue = document.getElementById('speed-value');
+        const holdValue = document.getElementById('hold-duration-value');
+        const controlsElement = document.getElementById('controls');
 
         logoElement.onerror = () => {
             logoElement.onerror = null;
@@ -368,6 +382,7 @@
             spawnRateValue.innerText = formatSpawnLabel(spawnDelayMs);
             maxMolesValue.innerText = `${maxActiveMoles}`;
             speedValue.innerText = formatSpeedLabel(travelSpeed);
+            holdValue.innerText = formatSpawnLabel(holdDurationMs);
 
             spawnRateInput.addEventListener('input', (e) => {
                 spawnDelayMs = Number(e.target.value);
@@ -383,9 +398,19 @@
                 travelSpeed = Number(e.target.value);
                 speedValue.innerText = formatSpeedLabel(travelSpeed);
             });
+
+            holdInput.addEventListener('input', (e) => {
+                holdDurationMs = Number(e.target.value);
+                holdValue.innerText = formatSpawnLabel(holdDurationMs);
+            });
         }
 
-        wireControls();
+        if (DEV_CONTROLS_ENABLED) {
+            controlsElement.classList.remove('hidden');
+            wireControls();
+        } else {
+            controlsElement.classList.add('hidden');
+        }
 
         // --- Game Logic ---
 
@@ -494,7 +519,7 @@
             });
         }
 
-        function updateMoles() {
+        function updateMoles(nowMs) {
             for (let i = objects.length - 1; i >= 0; i--) {
                 const mole = objects[i];
                 const data = mole.userData;
@@ -502,11 +527,12 @@
                 if (data.state === 'ENTERING') {
                     mole.position.x -= data.side * 0.035 * travelSpeed; // Slightly faster
                     
-                    const reached = (data.side === 1 && mole.position.x <= data.targetX) || 
+                    const reached = (data.side === 1 && mole.position.x <= data.targetX) ||
                                     (data.side === -1 && mole.position.x >= data.targetX);
                     if (reached) {
                         mole.position.x = data.targetX;
                         data.state = 'WAITING';
+                        data.waitEndTime = nowMs + holdDurationMs;
                         updateMoleVisuals(mole, 'waiting');
                     }
                 } else if (data.state === 'WAITING') {
@@ -514,7 +540,7 @@
                     if(data.isGlb) mole.rotation.z = Math.sin(Date.now() / 200) * 0.1;
                     else mole.rotation.x += 0.1;
 
-                    if (data.waitTimer > 60) {
+                    if (nowMs >= (data.waitEndTime ?? nowMs)) {
                         data.state = 'LEAVING';
                         updateMoleVisuals(mole, 'leaving');
                     }
@@ -586,12 +612,12 @@
         }
 
         function renderLoop() {
-            const now = Date.now();
+            const now = performance.now();
             if (objects.length < maxActiveMoles && now - lastSpawnTime > spawnDelayMs) {
                 createMole();
                 lastSpawnTime = now;
             }
-            updateMoles();
+            updateMoles(now);
             checkInteractions();
             renderer.render(scene, camera);
         }
