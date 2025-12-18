@@ -317,7 +317,7 @@
             do {
                 spawnY = (Math.random() * 1.5) - 0.75;
                 attempts++;
-            } while (!isSpawnClear(targetX, spawnY) && attempts < 10);
+            } while (!isSpawnClear(targetX, spawnY, hitRadius) && attempts < 10);
 
             mole.position.x = startX;
             mole.position.y = spawnY;
@@ -335,13 +335,24 @@
             objects.push(mole);
         }
 
-        function isSpawnClear(targetX, targetY) {
+        function isSpawnClear(targetX, targetY, newHitRadius) {
             return objects.every((obj) => {
                 const existingTarget = obj.userData.targetX ?? obj.position.x;
                 const existingY = obj.position.y;
-                const dx = targetX - existingTarget;
-                const dy = targetY - existingY;
-                return Math.hypot(dx, dy) >= MIN_MOLE_SEPARATION;
+                const existingRadius = obj.userData.hitRadius ?? HIT_RADIUS;
+
+                const padding = Math.max(MIN_MOLE_SEPARATION, Math.max(existingRadius, newHitRadius) * 0.3);
+                const requiredSeparation = existingRadius + newHitRadius + padding;
+
+                const dxTarget = targetX - existingTarget;
+                const dyTarget = targetY - existingY;
+                const targetDistance = Math.hypot(dxTarget, dyTarget);
+
+                const dxCurrent = targetX - obj.position.x;
+                const dyCurrent = targetY - obj.position.y;
+                const currentDistance = Math.hypot(dxCurrent, dyCurrent);
+
+                return targetDistance >= requiredSeparation && currentDistance >= requiredSeparation;
             });
         }
 
