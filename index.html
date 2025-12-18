@@ -95,10 +95,12 @@
 
         // --- Globals ---
         let score = 0;
-        let objects = []; 
+        let objects = [];
         let lastSpawnTime = 0;
         let moleModel = null;
         let handResults = null;
+        let moleHitRadius = HIT_RADIUS;
+        let fallbackHitRadius = HIT_RADIUS;
         let screenAspect = window.innerWidth / window.innerHeight;
 
         const DEFAULT_LOGO_DATA_URL = (() => {
@@ -154,9 +156,14 @@
         // --- Load Models ---
         const loader = new GLTFLoader();
 
-        loader.load(MOLE_MODEL_URL, (gltf) => { 
-            moleModel = gltf.scene; 
+        loader.load(MOLE_MODEL_URL, (gltf) => {
+            moleModel = gltf.scene;
             moleModel.traverse(c => { if(c.isMesh) c.material.side = THREE.DoubleSide; });
+
+            const bounds = new THREE.Box3().setFromObject(moleModel);
+            const sphere = new THREE.Sphere();
+            bounds.getBoundingSphere(sphere);
+            moleHitRadius = sphere.radius * MOLE_SCALE * 1.05; // small padding
         });
 
         loader.load(BG_MODEL_URL, (gltf) => {
@@ -273,31 +280,36 @@
             let mole;
             let isGlb = false;
             let baseScale = 1;
+            let hitRadius = HIT_RADIUS;
 
             if (moleModel) {
                 mole = moleModel.clone();
                 mole.scale.set(MOLE_SCALE, MOLE_SCALE, MOLE_SCALE);
                 isGlb = true;
                 baseScale = MOLE_SCALE;
+                hitRadius = moleHitRadius;
             } else {
                 const geometry = new THREE.CapsuleGeometry(0.1, 0.3, 4, 8);
+                geometry.computeBoundingSphere();
+                fallbackHitRadius = (geometry.boundingSphere?.radius || HIT_RADIUS) * 1.05;
                 const material = new THREE.MeshStandardMaterial({ color: 0xff4444 });
                 mole = new THREE.Mesh(geometry, material);
                 mole.rotation.z = Math.PI / 2;
                 baseScale = 1;
+                hitRadius = fallbackHitRadius;
             }
 
             // DYNAMIC SPAWN POINTS: Use Camera Edges
             // camera.right is the exact edge of the screen in 3D units
-            const screenEdge = camera.right; 
-            
-            const sideFactor = Math.random() > 0.5 ? 1 : -1; 
-            
-            // Start slightly off-screen (Edge + 0.3)
-            const startX = sideFactor * (screenEdge + 0.3);
-            
-            // Pop out distance (Fixed distance from edge, e.g., 0.6 units inwards)
-            const targetX = sideFactor * (screenEdge - 0.6); 
+            const screenEdge = camera.right;
+
+            const sideFactor = Math.random() > 0.5 ? 1 : -1;
+
+            // Start off-screen by at least the mole radius so it emerges naturally
+            const startX = sideFactor * (screenEdge + hitRadius);
+
+            // Keep roughly 20% of the model off-canvas by stopping 60% of the radius inside the view
+            const targetX = sideFactor * (screenEdge - hitRadius * 0.6);
 
             // Keep trying to find a clear spawn position to avoid overlaps
             let spawnY = 0;
@@ -305,7 +317,7 @@
             do {
                 spawnY = (Math.random() * 1.5) - 0.75;
                 attempts++;
-            } while (!isSpawnClear(targetX, spawnY) && attempts < 10);
+            } while (!isSpawnClear(targetX, spawnY, hitRadius) && attempts < 10);
 
             mole.position.x = startX;
             mole.position.y = spawnY;
@@ -316,19 +328,31 @@
             mole.userData = { 
                 state: 'ENTERING', startX: startX, targetX: targetX,
                 side: sideFactor, waitTimer: 0, isGlb: isGlb,
-                hitTimer: 0, baseScale: baseScale
+                hitTimer: 0, baseScale: baseScale,
+                hitRadius: isGlb ? moleHitRadius : fallbackHitRadius
             };
             scene.add(mole);
             objects.push(mole);
         }
 
-        function isSpawnClear(targetX, targetY) {
+        function isSpawnClear(targetX, targetY, newHitRadius) {
             return objects.every((obj) => {
                 const existingTarget = obj.userData.targetX ?? obj.position.x;
                 const existingY = obj.position.y;
-                const dx = targetX - existingTarget;
-                const dy = targetY - existingY;
-                return Math.hypot(dx, dy) >= MIN_MOLE_SEPARATION;
+                const existingRadius = obj.userData.hitRadius ?? HIT_RADIUS;
+
+                const padding = Math.max(MIN_MOLE_SEPARATION, Math.max(existingRadius, newHitRadius) * 0.3);
+                const requiredSeparation = existingRadius + newHitRadius + padding;
+
+                const dxTarget = targetX - existingTarget;
+                const dyTarget = targetY - existingY;
+                const targetDistance = Math.hypot(dxTarget, dyTarget);
+
+                const dxCurrent = targetX - obj.position.x;
+                const dyCurrent = targetY - obj.position.y;
+                const currentDistance = Math.hypot(dxCurrent, dyCurrent);
+
+                return targetDistance >= requiredSeparation && currentDistance >= requiredSeparation;
             });
         }
 
@@ -418,9 +442,10 @@
 
                 for (let i = objects.length - 1; i >= 0; i--) {
                     const mole = objects[i];
+                    const hitRadius = mole.userData.hitRadius ?? HIT_RADIUS;
                     const dist = Math.hypot(handX - mole.position.x, handY - mole.position.y);
 
-                    if (dist < HIT_RADIUS) {
+                    if (dist < hitRadius) {
                         if (mole.userData.state !== 'LEAVING' && mole.userData.state !== 'HIT') updateMoleVisuals(mole, 'hover');
                         if (pinchDist < GRAB_THRESHOLD && mole.userData.state !== 'HIT') {
                             score++;
