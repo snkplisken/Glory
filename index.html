@@ -20,11 +20,21 @@
             position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; 
             pointer-events: none; z-index: 10;
         }
+        #logo {
+            position: absolute;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(280px, 45vw);
+            pointer-events: none;
+            z-index: 11;
+        }
+
         #score-board {
             position: absolute; top: 20px; right: 20px;
-            color: #00ffcc; font-size: 2.5rem; font-weight: 900;
+            color: #e21690; font-size: 2.5rem; font-weight: 900;
             text-shadow: 2px 2px 0px #000;
-            background: rgba(0, 0, 0, 0.6); padding: 10px 25px; border-radius: 15px; border: 2px solid #00ffcc;
+            background: rgba(0, 0, 0, 0.6); padding: 10px 25px; border-radius: 15px; border: 2px solid #e21690;
         }
         #status {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -59,6 +69,7 @@
     </div>
 
     <div id="ui-layer">
+        <img id="logo" alt="Game logo" aria-hidden="true" />
         <div id="score-board">0</div>
         <div id="status">Starting Camera...</div>
     </div>
@@ -68,11 +79,13 @@
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
         // --- Configuration ---
-        const MOLE_MODEL_URL = './model.glb'; 
-        const BG_MODEL_URL = './background.glb'; 
+        // Point to a PNG logo placed next to this file; falls back to a generated asset if missing.
+        const CUSTOM_LOGO_PATH = './logo.png';
+        const MOLE_MODEL_URL = './model.glb';
+        const BG_MODEL_URL = './background.glb';
         const MOLE_SCALE = 0.5;
         const BG_SCALE = 3.0; // Increased to cover wider screens
-        
+
         const GRAB_THRESHOLD = 0.08; 
         const HIT_RADIUS = 0.2; 
         const SPAWN_RATE = 1200; 
@@ -85,13 +98,66 @@
         let handResults = null;
         let screenAspect = window.innerWidth / window.innerHeight;
 
+        const DEFAULT_LOGO_DATA_URL = (() => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 320;
+            canvas.height = 80;
+
+            const ctx = canvas.getContext('2d');
+            const padding = 4;
+            const radius = 18;
+            const width = canvas.width - padding * 2;
+            const height = canvas.height - padding * 2;
+
+            ctx.fillStyle = '#0a2635';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#e21690';
+            ctx.lineWidth = 6;
+            ctx.fillStyle = 'rgba(226, 22, 144, 0.12)';
+
+            const roundedRect = (x, y, w, h, r) => {
+                ctx.beginPath();
+                ctx.moveTo(x + r, y);
+                ctx.lineTo(x + w - r, y);
+                ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+                ctx.lineTo(x + w, y + h - r);
+                ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+                ctx.lineTo(x + r, y + h);
+                ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+                ctx.lineTo(x, y + r);
+                ctx.quadraticCurveTo(x, y, x + r, y);
+                ctx.closePath();
+            };
+
+            roundedRect(padding, padding, width, height, radius);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#e21690';
+            ctx.font = 'bold 32px "Segoe UI", system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+            ctx.shadowBlur = 6;
+            ctx.fillText('GAME LOGO', canvas.width / 2, canvas.height / 2);
+
+            return canvas.toDataURL('image/png');
+        })();
+
         const scoreElement = document.getElementById('score-board');
         const statusElement = document.getElementById('status');
         const videoElement = document.getElementById('video-feed');
         const canvasElement = document.getElementById('three-canvas');
         const cutoutCanvas = document.getElementById('cutout-canvas');
         const cutoutCtx = cutoutCanvas.getContext('2d');
+        const logoElement = document.getElementById('logo');
 
+        logoElement.onerror = () => {
+            logoElement.onerror = null;
+            logoElement.src = DEFAULT_LOGO_DATA_URL;
+        };
+        logoElement.src = CUSTOM_LOGO_PATH || DEFAULT_LOGO_DATA_URL;
         // --- Three.js Setup ---
         const scene = new THREE.Scene();
         
