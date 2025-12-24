@@ -169,7 +169,13 @@
         const CUSTOM_LOGO_PATH = './logo.png';
         const MOLE_MODEL_URL = 'penis.glb';
         const BG_MODEL_URL = './background.glb';
-        const MOLE_SCALE = 0.5;
+        const GAMEPLAY_CONFIG = {
+            spawnRateMs: 1200,
+            enterSpeed: 1.75,
+            leaveSpeed: 1.75,
+            waitDurationMs: 1000,
+            moleScale: 0.5
+        };
         const BG_SCALE = 3.0; // Increased to cover wider screens
         const BACKGROUND_MUSIC_URL = 'backgroundsong.mp3';
         const HIT_SOUND_URL = 'trigger.mp3';
@@ -178,7 +184,7 @@
 
         const GRAB_THRESHOLD = 0.08;
         const HIT_RADIUS = 0.2;
-        const SPAWN_RATE = 1200;
+        const SPAWN_RATE = GAMEPLAY_CONFIG.spawnRateMs;
         const MIN_MOLE_SEPARATION = 0.6;
         const HIT_EFFECT_DURATION = 12;
         const HIT_SCALE_MULTIPLIER = 1.6;
@@ -189,6 +195,7 @@
         let score = 0;
         let objects = [];
         let lastSpawnTime = 0;
+        let lastFrameTime = null;
         let moleModel = null;
         let handResults = null;
         let moleHitRadius = HIT_RADIUS;
@@ -269,7 +276,7 @@
             const bounds = new THREE.Box3().setFromObject(moleModel);
             const sphere = new THREE.Sphere();
             bounds.getBoundingSphere(sphere);
-            moleHitRadius = sphere.radius * MOLE_SCALE * 1.05; // small padding
+            moleHitRadius = sphere.radius * GAMEPLAY_CONFIG.moleScale * 1.05; // small padding
         });
 
         loader.load(BG_MODEL_URL, (gltf) => {
@@ -424,9 +431,9 @@
 
             if (moleModel) {
                 mole = moleModel.clone();
-                mole.scale.set(MOLE_SCALE, MOLE_SCALE, MOLE_SCALE);
+                mole.scale.set(GAMEPLAY_CONFIG.moleScale, GAMEPLAY_CONFIG.moleScale, GAMEPLAY_CONFIG.moleScale);
                 isGlb = true;
-                baseScale = MOLE_SCALE;
+                baseScale = GAMEPLAY_CONFIG.moleScale;
                 hitRadius = moleHitRadius;
             } else {
                 const geometry = new THREE.CapsuleGeometry(0.1, 0.3, 4, 8);
@@ -467,7 +474,7 @@
 
             mole.userData = { 
                 state: 'ENTERING', startX: startX, targetX: targetX,
-                side: sideFactor, waitTimer: 0, isGlb: isGlb,
+                side: sideFactor, waitTimer: 0, waitStart: null, isGlb: isGlb,
                 hitTimer: 0, baseScale: baseScale,
                 hitRadius: isGlb ? moleHitRadius : fallbackHitRadius
             };
@@ -512,19 +519,20 @@
             });
         }
 
-        function updateMoles() {
+        function updateMoles(deltaSeconds) {
             for (let i = objects.length - 1; i >= 0; i--) {
                 const mole = objects[i];
                 const data = mole.userData;
 
                 if (data.state === 'ENTERING') {
-                    mole.position.x -= data.side * 0.035; // Slightly faster
+                    mole.position.x -= data.side * (GAMEPLAY_CONFIG.enterSpeed * deltaSeconds);
                     
                     const reached = (data.side === 1 && mole.position.x <= data.targetX) || 
                                     (data.side === -1 && mole.position.x >= data.targetX);
                     if (reached) {
                         mole.position.x = data.targetX;
                         data.state = 'WAITING';
+                        data.waitStart = performance.now();
                         updateMoleVisuals(mole, 'waiting');
                     }
                 } else if (data.state === 'WAITING') {
@@ -532,12 +540,13 @@
                     if(data.isGlb) mole.rotation.z = Math.sin(Date.now() / 200) * 0.1;
                     else mole.rotation.x += 0.1;
 
-                    if (data.waitTimer > 60) {
+                    const elapsedWait = data.waitStart ? (performance.now() - data.waitStart) : 0;
+                    if (elapsedWait >= GAMEPLAY_CONFIG.waitDurationMs) {
                         data.state = 'LEAVING';
                         updateMoleVisuals(mole, 'leaving');
                     }
                 } else if (data.state === 'LEAVING') {
-                    mole.position.x += data.side * 0.035;
+                    mole.position.x += data.side * (GAMEPLAY_CONFIG.leaveSpeed * deltaSeconds);
                     // Remove if passed start position (off-screen)
                     const offScreen = (data.side === 1 && mole.position.x > data.startX) ||
                                       (data.side === -1 && mole.position.x < data.startX);
@@ -605,16 +614,27 @@
 
         function renderLoop() {
             if (!gameActive) {
-                updateMoles();
+                if (lastFrameTime === null) {
+                    lastFrameTime = performance.now();
+                }
+                const now = performance.now();
+                const deltaSeconds = (now - lastFrameTime) / 1000;
+                lastFrameTime = now;
+                updateMoles(deltaSeconds);
                 renderer.render(scene, camera);
                 return;
             }
-            const now = Date.now();
+            const now = performance.now();
+            if (lastFrameTime === null) {
+                lastFrameTime = now;
+            }
+            const deltaSeconds = (now - lastFrameTime) / 1000;
+            lastFrameTime = now;
             if (now - lastSpawnTime > SPAWN_RATE) {
                 createMole();
                 lastSpawnTime = now;
             }
-            updateMoles();
+            updateMoles(deltaSeconds);
             checkInteractions();
             renderer.render(scene, camera);
         }
