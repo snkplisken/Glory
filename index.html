@@ -174,7 +174,8 @@
             enterSpeed: 1.75,
             leaveSpeed: 1.75,
             waitDurationMs: 1000,
-            moleScale: 0.5
+            moleScale: 0.5,
+            maxActiveMoles: 6
         };
         const BG_SCALE = 3.0; // Increased to cover wider screens
         const BACKGROUND_MUSIC_URL = 'backgroundsong.mp3';
@@ -242,6 +243,7 @@
         const leaderboardListElement = document.getElementById('leaderboard-list');
         const leaderboardForm = document.getElementById('leaderboard-form');
         const initialsInput = document.getElementById('initials-input');
+        const maxActiveMoles = GAMEPLAY_CONFIG.maxActiveMoles;
 
         logoElement.onerror = () => {
             logoElement.onerror = null;
@@ -630,7 +632,7 @@
             }
             const deltaSeconds = (now - lastFrameTime) / 1000;
             lastFrameTime = now;
-            if (now - lastSpawnTime > SPAWN_RATE) {
+            if (now - lastSpawnTime > SPAWN_RATE && objects.length < maxActiveMoles) {
                 createMole();
                 lastSpawnTime = now;
             }
