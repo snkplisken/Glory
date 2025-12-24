@@ -410,6 +410,8 @@
                 height: 720
             });
             await cameraUtils.start();
+            startTimer();
+            enableAudio();
         }
 
         // --- Game Logic ---
@@ -708,7 +710,6 @@
         }
 
         startApp();
-        startTimer();
         window.addEventListener('pointerdown', enableAudio, { once: true });
         window.addEventListener('keydown', enableAudio, { once: true });
 
