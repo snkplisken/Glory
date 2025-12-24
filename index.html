@@ -193,6 +193,13 @@
         let timeRemaining = GAME_DURATION_SECONDS;
         let timerInterval = null;
         let gameActive = true;
+        const audioState = {
+            context: null,
+            masterGain: null,
+            bgInterval: null,
+            enabled: false,
+            noteIndex: 0
+        };
 
         const DEFAULT_LOGO_DATA_URL = (() => {
             const canvas = document.createElement('canvas');
@@ -322,6 +329,61 @@
             }
 
             userPlane.scale.set(scaleX, scaleY, 1);
+        }
+
+        // --- Audio ---
+        const backgroundNotes = [196, 220, 247, 262, 294, 262, 247, 220];
+
+        function setupAudio() {
+            if (audioState.context) return;
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+            audioState.context = new AudioContextClass();
+            audioState.masterGain = audioState.context.createGain();
+            audioState.masterGain.gain.value = 0.35;
+            audioState.masterGain.connect(audioState.context.destination);
+        }
+
+        function playTone(frequency, duration, volume, type = 'sine') {
+            if (!audioState.context || !audioState.masterGain) return;
+            const osc = audioState.context.createOscillator();
+            const gain = audioState.context.createGain();
+            osc.type = type;
+            osc.frequency.value = frequency;
+            gain.gain.value = 0.0001;
+            osc.connect(gain);
+            gain.connect(audioState.masterGain);
+            const now = audioState.context.currentTime;
+            gain.gain.exponentialRampToValueAtTime(volume, now + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+            osc.start(now);
+            osc.stop(now + duration + 0.05);
+        }
+
+        function startBackgroundMusic() {
+            if (audioState.bgInterval || !audioState.context) return;
+            const stepDuration = 0.32;
+            audioState.bgInterval = window.setInterval(() => {
+                const note = backgroundNotes[audioState.noteIndex % backgroundNotes.length];
+                playTone(note, 0.26, 0.12, 'triangle');
+                audioState.noteIndex += 1;
+            }, stepDuration * 1000);
+        }
+
+        function enableAudio() {
+            if (audioState.enabled) return;
+            setupAudio();
+            if (!audioState.context) return;
+            audioState.context.resume().then(() => {
+                audioState.enabled = true;
+                startBackgroundMusic();
+            });
+        }
+
+        function playHitSound() {
+            if (!audioState.enabled) return;
+            playTone(520, 0.12, 0.35, 'sawtooth');
+            playTone(760, 0.08, 0.25, 'square');
         }
 
         // --- AI Logic ---
@@ -551,6 +613,7 @@
                             mole.userData.state = 'HIT';
                             mole.userData.hitTimer = 0;
                             updateMoleVisuals(mole, 'hit');
+                            playHitSound();
                         }
                     } else {
                         if (mole.userData.state !== 'HIT') updateMoleVisuals(mole, 'normal');
@@ -667,6 +730,8 @@
 
         startApp();
         startTimer();
+        window.addEventListener('pointerdown', enableAudio, { once: true });
+        window.addEventListener('keydown', enableAudio, { once: true });
 
         leaderboardForm.addEventListener('submit', (event) => {
             event.preventDefault();
