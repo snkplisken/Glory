@@ -171,6 +171,10 @@
         const BG_MODEL_URL = './background.glb';
         const MOLE_SCALE = 0.5;
         const BG_SCALE = 3.0; // Increased to cover wider screens
+        const BACKGROUND_MUSIC_URL = './background-music.mp3';
+        const HIT_SOUND_URL = './hit-sound.mp3';
+        const BACKGROUND_MUSIC_VOLUME = 0.25;
+        const HIT_SOUND_VOLUME = 0.6;
 
         const GRAB_THRESHOLD = 0.08;
         const HIT_RADIUS = 0.2;
@@ -193,6 +197,11 @@
         let timeRemaining = GAME_DURATION_SECONDS;
         let timerInterval = null;
         let gameActive = true;
+        const audioState = {
+            background: null,
+            hit: null,
+            enabled: false
+        };
 
         const DEFAULT_LOGO_DATA_URL = (() => {
             const canvas = document.createElement('canvas');
@@ -322,6 +331,38 @@
             }
 
             userPlane.scale.set(scaleX, scaleY, 1);
+        }
+
+        // --- Audio ---
+        function setupAudio() {
+            if (audioState.background && audioState.hit) return;
+            const background = new Audio(BACKGROUND_MUSIC_URL);
+            background.loop = true;
+            background.volume = BACKGROUND_MUSIC_VOLUME;
+            background.preload = 'auto';
+
+            const hit = new Audio(HIT_SOUND_URL);
+            hit.volume = HIT_SOUND_VOLUME;
+            hit.preload = 'auto';
+
+            audioState.background = background;
+            audioState.hit = hit;
+        }
+
+        function enableAudio() {
+            if (audioState.enabled) return;
+            setupAudio();
+            if (!audioState.background || !audioState.hit) return;
+            audioState.enabled = true;
+            audioState.background.play().catch(() => {
+                audioState.enabled = false;
+            });
+        }
+
+        function playHitSound() {
+            if (!audioState.enabled || !audioState.hit) return;
+            audioState.hit.currentTime = 0;
+            audioState.hit.play().catch(() => {});
         }
 
         // --- AI Logic ---
@@ -551,6 +592,7 @@
                             mole.userData.state = 'HIT';
                             mole.userData.hitTimer = 0;
                             updateMoleVisuals(mole, 'hit');
+                            playHitSound();
                         }
                     } else {
                         if (mole.userData.state !== 'HIT') updateMoleVisuals(mole, 'normal');
@@ -667,6 +709,8 @@
 
         startApp();
         startTimer();
+        window.addEventListener('pointerdown', enableAudio, { once: true });
+        window.addEventListener('keydown', enableAudio, { once: true });
 
         leaderboardForm.addEventListener('submit', (event) => {
             event.preventDefault();
