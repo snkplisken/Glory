@@ -146,7 +146,7 @@
         <img id="logo" alt="Game logo" aria-hidden="true" />
         <div id="timer-board">1:00</div>
         <div id="score-board">0</div>
-        <div id="status">Starting Camera...</div>
+        <div id="status">3</div>
         <div id="leaderboard">
             <div id="leaderboard-card">
                 <h2>Leaderboard</h2>
@@ -204,7 +204,9 @@
         let screenAspect = window.innerWidth / window.innerHeight;
         let timeRemaining = GAME_DURATION_SECONDS;
         let timerInterval = null;
-        let gameActive = true;
+        let gameActive = false; // Start as false, will be set to true after countdown
+        let cameraReady = false;
+        let countdownActive = false;
         const audioState = {
             background: null,
             hit: null,
@@ -344,7 +346,8 @@
 
         // --- Audio ---
         function setupAudio() {
-            if (audioState.background && audioState.hit) return;
+            if (audioState.background) return; // Only setup once
+
             const background = new Audio(BACKGROUND_MUSIC_URL);
             background.loop = true;
             background.volume = BACKGROUND_MUSIC_VOLUME;
@@ -399,7 +402,41 @@
             cutoutTexture.needsUpdate = true;
         }
 
+        async function startCountdown() {
+            countdownActive = true;
+            let count = 3;
+
+            const countdownInterval = setInterval(() => {
+                if (count > 0) {
+                    statusElement.innerText = count.toString();
+                    count--;
+                } else {
+                    clearInterval(countdownInterval);
+                    statusElement.innerText = "GO!";
+
+                    // Wait for camera to be ready before starting game
+                    const waitForCamera = () => {
+                        if (cameraReady) {
+                            setTimeout(() => {
+                                statusElement.style.display = 'none';
+                                countdownActive = false;
+                                gameActive = true;
+                                startTimer();
+                                enableAudio();
+                            }, 500);
+                        } else {
+                            setTimeout(waitForCamera, 100);
+                        }
+                    };
+                    waitForCamera();
+                }
+            }, 1000);
+        }
+
         async function startApp() {
+            // Start countdown immediately
+            startCountdown();
+
             const segmentation = new SelfieSegmentation({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`});
             segmentation.setOptions({ modelSelection: 1 });
             segmentation.onResults(onSegmentationResults);
@@ -412,15 +449,19 @@
                 onFrame: async () => {
                     await segmentation.send({image: videoElement});
                     await hands.send({image: videoElement});
-                    statusElement.style.display = 'none';
-                    renderLoop();
+
+                    if (!cameraReady) {
+                        cameraReady = true;
+                    }
+
+                    if (gameActive || countdownActive) {
+                        renderLoop();
+                    }
                 },
                 width: 1280,
                 height: 720
             });
             await cameraUtils.start();
-            startTimer();
-            enableAudio();
         }
 
         // --- Game Logic ---
@@ -522,41 +563,43 @@
         }
 
         function updateMoles(deltaSeconds) {
+            const now = performance.now();
+
             for (let i = objects.length - 1; i >= 0; i--) {
                 const mole = objects[i];
                 const data = mole.userData;
+                const state = data.state;
 
-                if (data.state === 'ENTERING') {
+                if (state === 'ENTERING') {
                     mole.position.x -= data.side * (GAMEPLAY_CONFIG.enterSpeed * deltaSeconds);
-                    
-                    const reached = (data.side === 1 && mole.position.x <= data.targetX) || 
+
+                    const reached = (data.side === 1 && mole.position.x <= data.targetX) ||
                                     (data.side === -1 && mole.position.x >= data.targetX);
                     if (reached) {
                         mole.position.x = data.targetX;
                         data.state = 'WAITING';
-                        data.waitStart = performance.now();
+                        data.waitStart = now;
                         updateMoleVisuals(mole, 'waiting');
                     }
-                } else if (data.state === 'WAITING') {
+                } else if (state === 'WAITING') {
                     data.waitTimer++;
-                    if(data.isGlb) mole.rotation.z = Math.sin(Date.now() / 200) * 0.1;
+                    if(data.isGlb) mole.rotation.z = Math.sin(now / 200) * 0.1;
                     else mole.rotation.x += 0.1;
 
-                    const elapsedWait = data.waitStart ? (performance.now() - data.waitStart) : 0;
+                    const elapsedWait = data.waitStart ? (now - data.waitStart) : 0;
                     if (elapsedWait >= GAMEPLAY_CONFIG.waitDurationMs) {
                         data.state = 'LEAVING';
                         updateMoleVisuals(mole, 'leaving');
                     }
-                } else if (data.state === 'LEAVING') {
+                } else if (state === 'LEAVING') {
                     mole.position.x += data.side * (GAMEPLAY_CONFIG.leaveSpeed * deltaSeconds);
-                    // Remove if passed start position (off-screen)
                     const offScreen = (data.side === 1 && mole.position.x > data.startX) ||
                                       (data.side === -1 && mole.position.x < data.startX);
                     if (offScreen) {
                         scene.remove(mole);
                         objects.splice(i, 1);
                     }
-                } else if (data.state === 'HIT') {
+                } else if (state === 'HIT') {
                     data.hitTimer++;
                     const progress = data.hitTimer / HIT_EFFECT_DURATION;
                     const scale = THREE.MathUtils.lerp(1, HIT_SCALE_MULTIPLIER, progress);
@@ -571,73 +614,59 @@
         }
 
         function checkInteractions() {
-            if (!gameActive) return;
-            if (!handResults || !handResults.multiHandLandmarks) return;
+            if (!gameActive || !handResults?.multiHandLandmarks) return;
+
+            const screenEdge = camera.right;
+            const objectsLen = objects.length;
 
             for (const landmarks of handResults.multiHandLandmarks) {
                 const indexTip = landmarks[8];
                 const thumbTip = landmarks[4];
                 const pinchDist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
-                
-                // Map Hand Coordinates (0 to 1) to Camera Frustum (-Aspect to +Aspect)
-                // Note: X is inverted because of the CSS mirror scaleX(-1), but we must match logic
-                const screenEdge = camera.right;
-                
-                // Since container is mirrored: Left hand in video appears on Right side of screen.
-                // MediaPipe X=0 is Left (which becomes Right visually).
-                // Let's stick to standard math: 
-                // Normalized X (0..1) -> Screen X (-Aspect..Aspect)
-                // MediaPipe x=0 is left edge of image. 
-                
-                const handX = (indexTip.x * 2 - 1) * screenEdge; 
-                const handY = -(indexTip.y * 2 - 1); // Top is 1, Bottom is -1
 
-                for (let i = objects.length - 1; i >= 0; i--) {
+                const handX = (indexTip.x * 2 - 1) * screenEdge;
+                const handY = -(indexTip.y * 2 - 1);
+
+                for (let i = objectsLen - 1; i >= 0; i--) {
                     const mole = objects[i];
-                    const hitRadius = mole.userData.hitRadius ?? HIT_RADIUS;
+                    const moleData = mole.userData;
+                    const hitRadius = moleData.hitRadius ?? HIT_RADIUS;
                     const dist = Math.hypot(handX - mole.position.x, handY - mole.position.y);
 
                     if (dist < hitRadius) {
-                        if (mole.userData.state !== 'LEAVING' && mole.userData.state !== 'HIT') updateMoleVisuals(mole, 'hover');
-                        if (pinchDist < GRAB_THRESHOLD && mole.userData.state !== 'HIT') {
+                        if (moleData.state !== 'LEAVING' && moleData.state !== 'HIT') updateMoleVisuals(mole, 'hover');
+                        if (pinchDist < GRAB_THRESHOLD && moleData.state !== 'HIT') {
                             score++;
                             scoreElement.innerText = score;
-                            mole.userData.state = 'HIT';
-                            mole.userData.hitTimer = 0;
+                            moleData.state = 'HIT';
+                            moleData.hitTimer = 0;
                             updateMoleVisuals(mole, 'hit');
                             playHitSound();
                         }
                     } else {
-                        if (mole.userData.state !== 'HIT') updateMoleVisuals(mole, 'normal');
+                        if (moleData.state !== 'HIT') updateMoleVisuals(mole, 'normal');
                     }
                 }
             }
         }
 
         function renderLoop() {
-            if (!gameActive) {
-                if (lastFrameTime === null) {
-                    lastFrameTime = performance.now();
-                }
-                const now = performance.now();
-                const deltaSeconds = (now - lastFrameTime) / 1000;
-                lastFrameTime = now;
-                updateMoles(deltaSeconds);
-                renderer.render(scene, camera);
-                return;
-            }
             const now = performance.now();
             if (lastFrameTime === null) {
                 lastFrameTime = now;
             }
             const deltaSeconds = (now - lastFrameTime) / 1000;
             lastFrameTime = now;
-            if (now - lastSpawnTime > SPAWN_RATE && objects.length < maxActiveMoles) {
-                createMole();
-                lastSpawnTime = now;
+
+            if (gameActive) {
+                if (now - lastSpawnTime > SPAWN_RATE && objects.length < maxActiveMoles) {
+                    createMole();
+                    lastSpawnTime = now;
+                }
+                checkInteractions();
             }
+
             updateMoles(deltaSeconds);
-            checkInteractions();
             renderer.render(scene, camera);
         }
 
